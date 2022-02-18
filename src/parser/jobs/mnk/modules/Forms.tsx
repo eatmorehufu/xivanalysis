@@ -12,7 +12,7 @@ import {Data} from 'parser/core/modules/Data'
 import Downtime from 'parser/core/modules/Downtime'
 import Suggestions, {SEVERITY, Suggestion, TieredSuggestion} from 'parser/core/modules/Suggestions'
 import React from 'react'
-import {FORM_TIMEOUT_MILLIS, FORMS, OPO_OPO_SKILLS} from './constants'
+import {FORM_TIMEOUT_MILLIS, FORMS, OPO_OPO_ACTIONS} from './constants'
 import {fillActions, fillStatuses} from './utilities'
 
 export class Forms extends Analyser {
@@ -39,7 +39,7 @@ export class Forms extends Analyser {
 
 	override initialise(): void {
 		this.forms = fillStatuses(FORMS, this.data)
-		this.opoOpoSkills = fillActions(OPO_OPO_SKILLS, this.data)
+		this.opoOpoSkills = fillActions(OPO_OPO_ACTIONS, this.data)
 
 		const playerFilter = filter<Event>().source(this.parser.actor.id)
 		this.addEventHook(playerFilter.type('statusApply').status(oneOf(this.forms)), this.onGain)
@@ -111,6 +111,9 @@ export class Forms extends Analyser {
 	private onGain(event: Events['statusApply']): void {
 		this.lastFormChanged = event.timestamp
 
+		// Reset forms - we need this to avoid DK spam rotations leaving trailing hooks
+		this.resetFormHook()
+
 		this.formHook = this.addEventHook(
 			filter<Event>()
 				.source(this.parser.actor.id)
@@ -122,6 +125,10 @@ export class Forms extends Analyser {
 	private onRemove(event: Events['statusRemove']): void {
 		this.lastFormDropped = event.timestamp
 
+		this.resetFormHook()
+	}
+
+	private resetFormHook() {
 		if (this.formHook != null) {
 			this.removeEventHook(this.formHook)
 			this.formHook = undefined

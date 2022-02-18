@@ -53,6 +53,9 @@ export class TranslateAdapterStep extends AdapterStep {
 	// Using negatives so we don't tread on fflog's positive sequence IDs
 	private nextFakeSequence = -1
 
+	// Set of sequence IDs that have been explicitly seen in a calculated event
+	private calculatedSequences = new Set<number>()
+
 	override adapt(baseEvent: FflogsEvent, _adaptedEvents: Event[]): Event[] {
 		switch (baseEvent.type) {
 		case 'begincast':
@@ -101,6 +104,8 @@ export class TranslateAdapterStep extends AdapterStep {
 		/* eslint-disable no-fallthrough */
 		// Dispels are already modelled by other events, and aren't something we really care about
 		case 'dispel':
+		// FFLogs computed value, could be useful in the future for shield healing analysis.
+		case 'absorbed':
 		case 'interrupt':
 		// Encounter events don't expose anything particularly useful for us
 		case 'encounterstart':
@@ -164,7 +169,8 @@ export class TranslateAdapterStep extends AdapterStep {
 		// Calc events should all have a packet ID for sequence purposes. Otherwise, this is a damage or heal effect packet for an over time effect.
 		const sequence = event.packetID
 
-		if (sequence == null) {
+		// As of ~6.08, FF Logs reports a packetID that links all `damage` events from a single DOT application, however these still do not have calculated events.
+		if (sequence == null || !this.calculatedSequences.has(sequence)) {
 			// Damage over time or Heal over time effects are sent as damage/heal events without a sequence ID -- there is no execute confirmation for over time effects, just the actual damage or heal event
 			// Similarly, certain failed hits will generate an "unpaired" event
 			const cause = resolveCause(event.ability.guid)
@@ -198,6 +204,7 @@ export class TranslateAdapterStep extends AdapterStep {
 
 		// Instant kills don't seem to include a sequence, so we're faking it
 		const sequence = this.nextFakeSequence--
+		const bonusPercent = event.bonusPercent ?? 0
 
 		// Build the primary damage event for the instakill.
 		const damageEvent: Events['damage'] = {
@@ -209,6 +216,7 @@ export class TranslateAdapterStep extends AdapterStep {
 				...resolveTargetId(event),
 				// We don't get any amount for an instakill, fake it with the target's HP.
 				amount: target.maxHitPoints,
+				bonusPercent,
 				overkill: target.maxHitPoints - target.hitPoints,
 				// No hit type either, just assume normal.
 				sourceModifier: SourceModifier.NORMAL,
@@ -232,6 +240,8 @@ export class TranslateAdapterStep extends AdapterStep {
 	}
 
 	private adaptDamageEvent(event: DamageEvent): Array<Events['damage' | 'actorUpdate']> {
+		const sequence = event.packetID
+
 		// Calculate source modifier
 		let sourceModifier = sourceHitType[event.hitType] ?? SourceModifier.NORMAL
 		if (event.multistrike) {
@@ -242,31 +252,39 @@ export class TranslateAdapterStep extends AdapterStep {
 
 		// Build the new event
 		const overkill = event.overkill ?? 0
+		const bonusPercent = event.bonusPercent ?? 0
 		const newEvent: Events['damage'] = {
 			...this.adaptSourceFields(event),
 			type: 'damage',
 			cause: resolveCause(event.ability.guid),
-			sequence: event.packetID,
+			sequence,
 			targets: [{
 				...resolveTargetId(event),
 				// fflogs subtracts overkill from amount, amend
 				amount: event.amount + overkill,
+				bonusPercent,
 				overkill,
 				sourceModifier,
 				targetModifier: targetHitType[event.hitType] ?? TargetModifier.NORMAL,
 			}],
 		}
 
+		if (sequence != null) {
+			this.calculatedSequences.add(sequence)
+		}
+
 		return [newEvent, ...this.buildActorUpdateResourceEvents(event)]
 	}
 
 	private adaptHealEvent(event: HealEvent): Array<Events['heal' | 'actorUpdate']> {
+		const sequence = event.packetID
 		const overheal = event.overheal ?? 0
+
 		const newEvent: Events['heal'] = {
 			...this.adaptSourceFields(event),
 			type: 'heal',
 			cause: resolveCause(event.ability.guid),
-			sequence: event.packetID,
+			sequence,
 			targets: [{
 				...resolveTargetId(event),
 				// fflogs substracts overheal from amount, amend
@@ -274,6 +292,10 @@ export class TranslateAdapterStep extends AdapterStep {
 				overheal,
 				sourceModifier: sourceHitType[event.hitType] ?? SourceModifier.NORMAL,
 			}],
+		}
+
+		if (sequence != null) {
+			this.calculatedSequences.add(sequence)
 		}
 
 		return [newEvent, ...this.buildActorUpdateResourceEvents(event)]
